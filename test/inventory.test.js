@@ -39,14 +39,31 @@ describe('inventory', () => {
     });
 
     it('rejects a missing title, a bad date and bad numbers', () => {
-      throwsCode(() => createEvent(store, { title: ' ', city: 'x', startsAt: '2026-12-05' }), 'VALIDATION');
-      throwsCode(() => createEvent(store, { title: 'x', city: 'x', startsAt: 'nope' }), 'VALIDATION');
+      throwsCode(() => createEvent(store, { title: ' ', city: 'x', startsAt: '2026-12-05', organizerId: 'org-1' }), 'VALIDATION');
+      throwsCode(() => createEvent(store, { title: 'x', city: 'x', startsAt: 'nope', organizerId: 'org-1' }), 'VALIDATION');
       throwsCode(() => addTier(store, event.id, { name: 'x', priceCents: 19.99, capacity: 5 }), 'VALIDATION');
       throwsCode(() => addTier(store, event.id, { name: 'x', priceCents: 100, capacity: 0 }), 'VALIDATION');
     });
 
+    it('rejects a missing organizer ID', () => {
+      throwsCode(
+        () => createEvent(store, {
+          title: 'Another Event',
+          city: 'Abuja',
+          startsAt: '2026-12-06',
+          organizerId: ' ',
+        }),
+        'VALIDATION',
+      );
+    });
+
     it('cannot publish an event with no tiers', () => {
-      const empty = createEvent(store, { title: 'Empty', city: 'Abuja', startsAt: '2026-12-06' });
+      const empty = createEvent(store, {
+        title: 'Empty',
+        city: 'Abuja',
+        startsAt: '2026-12-06',
+        organizerId: 'org-2',
+      });
       throwsCode(() => publishEvent(store, empty.id), 'INVALID_STATE');
       assert.equal(publishEvent(store, event.id).status, 'published');
     });
@@ -64,6 +81,11 @@ describe('inventory', () => {
       bookTickets(store, tier.id, 'ada', 2);
       throwsCode(() => bookTickets(store, tier.id, 'bayo', 2), 'SOLD_OUT');
       assert.equal(seatsLeft(tier), 1);
+    });
+
+    it('rejects a missing user ID without changing inventory', () => {
+      throwsCode(() => bookTickets(store, tier.id, ' ', 1), 'VALIDATION');
+      assert.equal(seatsLeft(tier), 3);
     });
 
     it('lets the last ticket be booked, then reports sold out', () => {
@@ -103,6 +125,12 @@ describe('inventory', () => {
   });
 
   describe('waitlist', () => {
+    it('rejects a missing user ID without joining the waitlist', () => {
+      bookTickets(store, tier.id, 'bayo', 3);
+      throwsCode(() => joinWaitlist(store, tier.id, ' ', 1), 'VALIDATION');
+      assert.equal(joinWaitlist(store, tier.id, 'ada', 1).position, 1);
+    });
+
     it('only opens when the tier cannot satisfy the request', () => {
       throwsCode(() => joinWaitlist(store, tier.id, 'ada', 1), 'NOT_SOLD_OUT');
       bookTickets(store, tier.id, 'bayo', 3);
