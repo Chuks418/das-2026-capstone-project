@@ -1,8 +1,9 @@
+
 // Build 1: the domain core, running entirely in memory.
 // No server, no database. Just objects, Maps and rules.
 // Build 4 replaces this file with services + repositories.
 
-import { newId, referenceCode } from './ids.js';
+import { newId, newReference } from './ids.js';
 import { Queue } from './waitlistQueue.js';
 import { DomainError } from './errors.js';
 import { summarizeEvent } from './eventSearch.js';
@@ -17,7 +18,7 @@ export function createStore() {
     events: new Map(), // eventId -> event
     tiers: new Map(), // tierId -> tier
     bookings: new Map(), // bookingId -> booking
-    bookingsByReference: new Map(), // reference -> booking  (hash map = O(1) lookup)
+    bookingsByReference: new Map(), // reference -> booking (hash map = O(1) lookup)
     waitlists: new Map(), // tierId -> Queue
   };
 }
@@ -53,9 +54,12 @@ export function createEvent(store, { title, city, venue = '', startsAt, organize
   if (Number.isNaN(date.getTime())) {
     throw new DomainError('VALIDATION', 'startsAt must be a valid date');
   }
+
+  const validOrganizerId = requireText(organizerId, 'Organizer ID');
+
   const event = {
     id: newId(),
-    organizerId,
+    organizerId: validOrganizerId,
     title: requireText(title, 'Title'),
     city: requireText(city, 'City'),
     venue: String(venue).trim(),
@@ -63,6 +67,7 @@ export function createEvent(store, { title, city, venue = '', startsAt, organize
     status: 'draft',
     tierIds: [],
   };
+
   store.events.set(event.id, event);
   return event;
 }
@@ -79,6 +84,7 @@ export function addTier(store, eventId, { name, priceCents, capacity }) {
     capacity: requireWholeNumber(capacity, 'capacity', 1),
     sold: 0,
   };
+
   store.tiers.set(tier.id, tier);
   store.waitlists.set(tier.id, new Queue());
   event.tierIds.push(tier.id);
@@ -87,9 +93,11 @@ export function addTier(store, eventId, { name, priceCents, capacity }) {
 
 export function publishEvent(store, eventId) {
   const event = getEvent(store, eventId);
+
   if (event.tierIds.length === 0) {
     throw new DomainError('INVALID_STATE', 'Add at least one ticket tier before publishing');
   }
+
   event.status = 'published';
   return event;
 }
@@ -107,35 +115,43 @@ export function seatsLeft(tier) {
 
 export function bookTickets(store, tierId, userId, quantity) {
   const tier = getTier(store, tierId);
+  const validUserId = requireText(userId, 'User ID');
+
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_TICKETS_PER_BOOKING) {
     throw new DomainError('VALIDATION', `quantity must be between 1 and ${MAX_TICKETS_PER_BOOKING}`);
   }
 
   const left = seatsLeft(tier);
+
   if (left < quantity) {
-    const message = left === 0 ? `${tier.name} is sold out` : `Only ${left} ticket(s) left in ${tier.name}`;
+    const message = left === 0
+      ? `${tier.name} is sold out`
+      : `Only ${left} ticket(s) left in ${tier.name}`;
+
     throw new DomainError('SOLD_OUT', message, { seatsLeft: left });
   }
 
-  tier.sold += quantity;
-
   let reference;
   do {
-    reference = referenceCode();
+    reference = newReference();
   } while (store.bookingsByReference.has(reference));
 
   const booking = {
     id: newId(),
     reference,
-    userId,
+    userId: validUserId,
     tierId,
     quantity,
     amountCents: tier.priceCents * quantity,
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
+
+  // Update inventory only after the booking has been prepared successfully.
+  tier.sold += quantity;
   store.bookings.set(booking.id, booking);
   store.bookingsByReference.set(reference, booking);
+
   return booking;
 }
 
@@ -145,25 +161,34 @@ export function findBookingByReference(store, reference) {
 
 export function cancelBooking(store, reference) {
   const booking = findBookingByReference(store, reference);
+
   if (!booking) throw new DomainError('NOT_FOUND', 'Booking not found');
+
   if (!HOLDS_SEATS.has(booking.status)) {
     throw new DomainError('INVALID_STATE', `A ${booking.status} booking cannot be cancelled`);
   }
+
   getTier(store, booking.tierId).sold -= booking.quantity;
   booking.status = 'cancelled';
+
   return booking;
 }
 
 export function joinWaitlist(store, tierId, userId, quantity) {
   const tier = getTier(store, tierId);
+  const validUserId = requireText(userId, 'User ID');
+
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_TICKETS_PER_BOOKING) {
     throw new DomainError('VALIDATION', `quantity must be between 1 and ${MAX_TICKETS_PER_BOOKING}`);
   }
+
   if (seatsLeft(tier) >= quantity) {
     throw new DomainError('NOT_SOLD_OUT', 'Seats are available, so book them instead');
   }
+
   const queue = store.waitlists.get(tierId);
-  queue.enqueue({ userId, quantity });
+  queue.enqueue({ userId: validUserId, quantity });
+
   return { position: queue.size };
 }
 
@@ -173,6 +198,8 @@ export function offerNextOnWaitlist(store, tierId) {
   const tier = getTier(store, tierId);
   const queue = store.waitlists.get(tierId);
   const head = queue.peek();
+
   if (!head || seatsLeft(tier) < head.quantity) return undefined;
+
   return queue.dequeue();
 }
